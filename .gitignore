@@ -23,6 +23,8 @@ ocr_dataset/
 *.jpeg
 *.csv
 !test_images/
+!data/Stage1and2test(picture)/
+!data/Stage1and2test(picture)/*.jpg
 
 # Ignore IDE specific files
 .vscode/
