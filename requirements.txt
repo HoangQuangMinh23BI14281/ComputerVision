@@ -1,0 +1,11 @@
+# torch, torchvision, torchaudio installed via setup_env.bat for GPU support
+
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+shapely>=2.0.0
+pyclipper>=1.3.0
+transformers>=4.30.0
