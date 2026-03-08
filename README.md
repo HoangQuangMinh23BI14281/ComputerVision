@@ -1,40 +1,51 @@
-# SROIE OCR - Pure PyTorch Pipeline (DBNet++ & SVTR-Tiny)
+# SROIE OCR - Pure PyTorch Pipeline (EAST & CRNN)
 
-Dự án này là một quy trình nhận dạng chữ trong ảnh (Optical Character Recognition - OCR) hoàn chỉnh, được xây dựng 100% bằng **PyTorch nguyên bản (Pure PyTorch)**, không phụ thuộc vào các framework bọc sẵn nặng nề. Dự án được tối ưu hóa đặc biệt cho mục đích chạy trên hệ điều hành Windows, loại bỏ triệt để các lỗi rò rỉ bộ nhớ (Memory Leak) và thắt cổ chai luồng (Thread Contention) khi huấn luyện.
+Dự án này là một quy trình nhận dạng chữ trong ảnh (Optical Character Recognition - OCR) hoàn chỉnh, được xây dựng 100% bằng **PyTorch nguyên bản (Pure PyTorch)**. Phiên bản hiện tại đã được nâng cấp lên kiến trúc **EAST** cho phần phát hiện và **CRNN** cho phần nhận dạng, mang lại độ ổn định và hiệu suất cao.
 
 ## 🏗 Kiến trúc Model
 Pipeline được chia làm 2 giai đoạn chính:
 
-1. **Detection (Phát hiện vùng chữ): DBNet++**. 
-   - Backbone được thu gọn và dùng hàm Loss chuyên dụng (`DBLoss` hỗ trợ OHEM) để cắt ra các bounding box đa giác chứa chữ một cách cực kỳ chính xác.
-2. **Recognition (Nhận dạng ký tự): SVTR-Tiny**.
-   - Phiên bản SVTR đã được tinh gọn cấu trúc Transformer (chỉ còn ~4 Triệu tham số) với các chiều `embed_dims=[64, 128, 256]`. Điều này mang lại tốc độ inference và train cực nhanh, tiêu hao bộ nhớ thấp nhưng vẫn giữ nguyên sức mạnh của cơ chế Local-Global Mixing.
+1. **Detection (Phát hiện vùng chữ): EAST (Efficient and Accurate Scene Text detector)**. 
+   - Sử dụng backbone **VGG16** (BN) được tối ưu hóa.
+   - Đầu ra dự đoán trực tiếp các bản đồ điểm số (Score Map) và bản đồ hình học (Geometry Map - RBOX).
+   - Hỗ trợ khôi phục đa giác chữ chính xác ngay cả với chữ bị nghiêng.
+
+2. **Recognition (Nhận dạng ký tự): CRNN (Convolutional Recurrent Neural Network)**.
+   - Kết hợp giữa mạng tích chập (CNN) để trích xuất đặc trưng và Bi-LSTM để học trình tự ký tự.
+   - Sử dụng hàm Loss **CTC (Connectionist Temporal Classification)** giúp nhận dạng các từ có độ dài biến thiên mà không cần gán nhãn từng ký tự.
 
 ## 🚀 Tính năng nổi bật
-- **Script tự động hóa (`run.bat`)**: Chỉ cần click đúp chuột để chạy từ A-Z mọi quy trình (Cài đặt, Chuẩn bị dữ liệu, Huấn luyện, Inference) trên Windows.
-- **Tối ưu hóa RAM/VRAM cực mạnh**: Không xảy ra hiện tượng chậm dần qua từng Epoch nhờ khóa luồng OpenCV (`num_threads=0`) và Main Thread DataLoader trên Windows.
-- **Nhận dạng thông minh**: Cơ chế Inference ngẫu nhiên (chỉ cần Enter là lấy 1 ảnh test bất kỳ để quét) hoặc nhận dạng chủ động một bức ảnh chỉ định.
+- **Tối ưu hóa huấn luyện (Performance Boost)**:
+    - **AMP (Automatic Mixed Precision)**: Sử dụng FP16 giúp huấn luyện nhanh hơn 2-3 lần và tiết kiệm VRAM.
+    - **Multi-worker DataLoader**: Nạp dữ liệu song song, loại bỏ hiện tượng "đói dữ liệu" của GPU.
+- **Script tự động hóa (`run.sh`)**: Hỗ trợ chạy trên WSL/Ubuntu để đạt hiệu năng tốt nhất.
+- **Hệ thống Metrics chuyên sâu**: 
+    - EAST: Precision, Recall, F1-Score, IoU, FPS.
+    - CRNN: Word Accuracy, Character Accuracy, NED, Inference Time.
+- **Logging tự động**: Lưu log chi tiết ra tệp CSV sau mỗi Epoch để theo dõi quá trình hội tụ.
 
 ## 📂 Hướng dẫn sử dụng
 
 ### 1. Chuẩn bị Môi trường và Dữ liệu
-Hãy clone dự án về máy và nhấp đúp vào file `run.bat` tại thư mục gốc. Bạn sẽ thấy 6 tùy chọn. 
-- **Bấm phím 1**: Để hệ thống tự động tải về Python 3.12 (môi trường ảo), CUDA 12.1, PyTorch, và OpenCV.
-- **Bấm phím 2**: Để chuyển đổi data thô thành cấu trúc thư mục phù hợp cho việc train.
+Nếu bạn dùng Linux hoặc WSL:
+```bash
+chmod +x run.sh
+./run.sh
+```
+- **Chọn 1**: Để tự động khởi tạo môi trường ảo `.venv` và cài đặt thư viện (`torch`, `torchvision`, `opencv`, `shapely`, `pandas`,...).
+- **Chọn 2**: Chuẩn bị dữ liệu (Prepare Dataset).
 
-> **Lưu ý**: Dữ liệu ảnh cần nằm trong thư mục `data/Stage1train/` (hoặc sửa đổi đường dẫn trong `src/config.py`). Trọng số gốc (nếu có) nằm trong `weights/`. Bọn mình đã dùng `.gitignore` chặn đẩy ảnh và model nặng lên GitHub.
+> **Lưu ý**: Dữ liệu ảnh SROIE cần được đặt trong `data/Stage1train/` và `data/Stage2train/`. Quá trình chuẩn bị dữ liệu sẽ tạo ra các tệp chỉ mục trong `ocr_dataset/`.
 
-### 2. Quá trình Huấn luyện (Training)
-Mô hình hỗ trợ tự động resume (chạy tiếp) nếu quá trình train bị gián đoạn.
+### 2. Huấn luyện (Training)
+Mô hình sẽ tự động lưu trọng số tốt nhất (`best.pth`) và nhật ký huấn luyện (`log.csv`) vào thư mục `weights/`.
 
-- **Bấm phím 3**: Huấn luyện mô hình DBNet (Detection). Hệ thống sẽ trích xuất `thresh_map` và đo lường tỷ lệ F1-Score tự động.
-- **Bấm phím 4**: Huấn luyện mô hình SVTR (Recognition). Cấu trúc ảnh nhận dạng là `32x320` và CTC Loss được kiểm soát chặt để xóa lỗi inf.
-
-*Các tệp trọng số `best.pth` và `latest.pth` sẽ được lưu trong `weights/dbnet/` và `weights/svtr/` tương ứng.*
+- **Huấn luyện EAST**: `python -m src.train_east` (hoặc chọn option 3 trong `run.sh`).
+- **Huấn luyện CRNN**: `python -m src.train_crnn` (hoặc chọn option 4 trong `run.sh`).
 
 ### 3. Kiểm thử (Inference)
-- **Bấm phím 5**: Để chạy nhận dạng 1 bức ảnh.
-  - Bạn có thể **để trống và nhấn Enter** để hệ thống bốc ngẫu nhiên một bức ảnh trong tập Test.
-  - Hoặc dán đường dẫn trực tiếp (vd: `data/Stage1train/X00016469612.jpg`) để nhận dạng ảnh mong muốn.
-  
-Hệ thống sẽ vẽ Box lên ảnh và hiển thị chữ ra terminal cùng mức độ tự tin (Confidence). Ảnh kết quả vẽ bounding box nằm tại `inference_result.jpg`.
+Sử dụng script `inference.py` để chạy thử trên ảnh thực tế:
+```bash
+python inference.py --image "đường/dẫn/đến/ảnh.jpg"
+```
+Mặc định, nếu không truyền `--image`, hệ thống sẽ chọn ngẫu nhiên một ảnh trong tập test để dự đoán. Kết quả trực quan sẽ được lưu tại `inference_result.jpg`.
