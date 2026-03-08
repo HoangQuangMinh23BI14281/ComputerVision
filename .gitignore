@@ -11,20 +11,21 @@ __pycache__/
 *.pyd
 
 # Ignore weights and large models (keep directory structure if needed)
-weights/**/*.pth
-weights/**/*.pt
-weights/**/*.onnx
-!weights/**/.gitkeep
-
 # Ignore datasets and generated files
+data/*
+!data/Stage1train/
+!data/Stage2train/
 ocr_dataset/
-*.jpg
-*.png
-*.jpeg
-*.csv
-!test_images/
-!data/Stage1and2test(picture)/
-!data/Stage1and2test(picture)/*.jpg
+ocr_data/
+# *.jpg
+# *.png
+# *.jpeg
+weights/
+checkpoint/
+*.pt
+*.pth
+*.pth.tar
+*.ckpt
 
 # Ignore IDE specific files
 .vscode/

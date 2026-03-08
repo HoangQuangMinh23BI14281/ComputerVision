@@ -7,10 +7,10 @@ from src.pipeline import OCRPipeline
 from src.config import DEFAULT_DET_WEIGHTS, DEFAULT_REC_WEIGHTS
 
 def main():
-    parser = argparse.ArgumentParser(description="Pure PyTorch DBNet + SVTRv2 Pipeline Inference")
+    parser = argparse.ArgumentParser(description="Pure PyTorch EAST + CRNN Pipeline Inference")
     parser.add_argument("--image", type=str, default=None, help="Path to input image. If not provided, a random test image will be used.")
-    parser.add_argument("--det_model", type=str, default=DEFAULT_DET_WEIGHTS, help="Path to DBNet weights")
-    parser.add_argument("--rec_model", type=str, default=DEFAULT_REC_WEIGHTS, help="Path to SVTRv2 weights")
+    parser.add_argument("--det_model", type=str, default=DEFAULT_DET_WEIGHTS, help="Path to EAST weights")
+    parser.add_argument("--rec_model", type=str, default=DEFAULT_REC_WEIGHTS, help="Path to CRNN weights")
     parser.add_argument("--use_gpu", action="store_true", help="Use GPU for inference")
     parser.add_argument("--out", type=str, default="inference_result.jpg", help="Output visualization path")
     args = parser.parse_args()
