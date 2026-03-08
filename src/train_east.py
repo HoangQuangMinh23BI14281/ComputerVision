@@ -75,7 +75,7 @@ def main():
     if os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
         model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device))
     
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    optimizer = Adam(model.parameters(), lr=5e-5)
     loss_fn = EastLoss().to(device)
     
     # AMP Scaler
@@ -101,6 +101,11 @@ def main():
             
             # Scaled Backward
             scaler.scale(loss).backward()
+            
+            # Gradient Clipping (Safe margin)
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            
             scaler.step(optimizer)
             scaler.update()
             

@@ -4,7 +4,7 @@ from torch import nn
 
 def get_dice_loss(gt_score, pred_score):
     inter = torch.sum(gt_score * pred_score)
-    union = torch.sum(gt_score) + torch.sum(pred_score) + 1e-5
+    union = torch.sum(gt_score) + torch.sum(pred_score) + 1e-4
 
     return 1. - 2 * inter / union
 
@@ -18,7 +18,10 @@ def get_geo_loss(gt_geo, pred_geo):
     h_inter = torch.min(d3_gt, d3_pred) + torch.min(d4_gt, d4_pred)
     area_inter = w_inter * h_inter
     area_union = area_gt + area_pred - area_inter
-    iou_loss_map = - torch.log((area_inter + 1.0) / (area_union + 1.0))
+    
+    # Standard 1 - IoU is more stable than -log(IoU)
+    iou = (area_inter + 1.0) / (area_union + 1.0)
+    iou_loss_map = 1.0 - iou
     angle_loss_map = 1 - torch.cos(angle_gt - angle_pred)
 
     return iou_loss_map, angle_loss_map
