@@ -71,15 +71,15 @@ def main():
     )
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=east_collate_fn, num_workers=num_workers)
 
-    model = East(pretrained=True).to(device)
+    model = East(weights='DEFAULT').to(device)
     if os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
-        model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device))
+        model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device, weights_only=True))
     
     optimizer = Adam(model.parameters(), lr=5e-5)
     loss_fn = EastLoss().to(device)
     
-    # AMP Scaler
-    scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    # AMP Scaler (Updated API)
+    scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
     
     history = []
     best_f1 = 0
@@ -94,8 +94,8 @@ def main():
             
             optimizer.zero_grad()
             
-            # Autocast for Mixed Precision
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            # Autocast for Mixed Precision (Updated API)
+            with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
                 pred_score, pred_geo = model(images)
                 loss = loss_fn(gt_score, pred_score, gt_geo, pred_geo)
             

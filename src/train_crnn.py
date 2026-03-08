@@ -20,7 +20,7 @@ def train_batch(model, images, text_encodes, text_lens, optimizer, criterion, de
 
     optimizer.zero_grad()
     
-    with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+    with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
         logits = model(images)
         log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
 
@@ -102,11 +102,11 @@ def main():
     model = CRNN().to(device)
     if os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
         print("Loading best weights...")
-        model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device))
+        model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device, weights_only=True))
     
     optimizer = Adam(model.parameters(), lr=1e-4)
     criterion = nn.CTCLoss(zero_infinity=True)
-    scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
     
     converter = LabelConverter(REC_CHAR_SET)
     history = []

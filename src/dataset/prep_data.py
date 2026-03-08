@@ -3,6 +3,7 @@ import json
 import cv2
 import glob
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 def process_sroie():
     # Paths from the user's project structure
@@ -19,13 +20,20 @@ def process_sroie():
     det_train_txt = os.path.join(out_dir, "det_train.txt")
     rec_train_txt = os.path.join(out_dir, "rec_train.txt")
     
+    det_val_txt = os.path.join(out_dir, "det_val.txt")
+    rec_val_txt = os.path.join(out_dir, "rec_val.txt")
+    
     det_test_txt = os.path.join(out_dir, "det_test.txt")
     rec_test_txt = os.path.join(out_dir, "rec_test.txt")
 
-    train_imgs = sorted(glob.glob(os.path.join(train_img_dir, "*.jpg")))
+    all_train_imgs = sorted(glob.glob(os.path.join(train_img_dir, "*.jpg")))
     test_imgs = sorted(glob.glob(os.path.join(test_img_dir, "*.jpg")))
     
-    print(f"Found {len(train_imgs)} train images.")
+    # Split Train into Train (90%) and Val (10%)
+    train_imgs, val_imgs = train_test_split(all_train_imgs, test_size=0.1, random_state=42)
+    
+    print(f"Total train images: {len(all_train_imgs)}")
+    print(f"Split into: {len(train_imgs)} train, {len(val_imgs)} val.")
     print(f"Found {len(test_imgs)} test images.")
 
     global_crop_id = 0
@@ -70,7 +78,7 @@ def process_sroie():
                             "points": points
                         })
                         
-                        # --- CROP PROCESSING FOR CRNN/SVTR ---
+                        # --- CROP PROCESSING FOR CRNN ---
                         try:
                             import numpy as np
                             pts = np.array(points, dtype=np.float32)
@@ -103,16 +111,17 @@ def process_sroie():
                                 rel_crop_path = f"{out_dir}/crops/{crop_filename}"
                                 f_rec.write(f"{rel_crop_path}\t{text}\n")
                                 global_crop_id += 1
-                        except Exception as e:
+                        except Exception:
                             pass
                 
-                # --- DBNet ANNOTATION ---
-                # We save relative path of original image
+                # --- DETECTION ANNOTATION ---
                 rel_img_path = f"{img_dir_rel}/{img_id}.jpg"
                 f_det.write(f"{rel_img_path}\t{json.dumps(polygons, ensure_ascii=False)}\n")
 
     print("Generating Train Splits...")
     process_split(train_imgs, train_txt_dir, "data/Stage1train", det_train_txt, rec_train_txt)
+    print("Generating Val Splits...")
+    process_split(val_imgs, train_txt_dir, "data/Stage1train", det_val_txt, rec_val_txt)
     print("Generating Test Splits...")
     process_split(test_imgs, test_txt_dir, "data/Stage1and2test(picture)", det_test_txt, rec_test_txt)
 

@@ -6,10 +6,10 @@ import math
 import torchvision
 
 class Extractor(nn.Module):
-    def __init__(self, pretrained):
+    def __init__(self, weights=None):
         super(Extractor, self).__init__()
-        # Use torchvision's vgg16_bn which includes Batch Normalization
-        vgg16_bn = torchvision.models.vgg16_bn(pretrained=pretrained)
+        # Use torchvision's vgg16_bn with weights parameter
+        vgg16_bn = torchvision.models.vgg16_bn(weights=weights)
         self.features = vgg16_bn.features
 
 
@@ -120,9 +120,9 @@ class Output(nn.Module):
 
 
 class East(nn.Module):
-    def __init__(self, pretrained=False):
+    def __init__(self, weights=None):
         super(East, self).__init__()
-        self.extractor = Extractor(pretrained)
+        self.extractor = Extractor(weights)
         self.merge = Merge()
         self.output = Output()
 
