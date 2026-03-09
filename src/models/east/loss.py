@@ -5,16 +5,18 @@ from torch import nn
 def get_dice_loss(gt_score, pred_score):
     """
     Computes the Dice loss for the classification branch.
-    Calculated per-image in the batch for better stability.
+    Stable implementation using sum over spatial dimensions.
     """
-    eps = 1e-5
-    # Calculate intersection and union over spatial dimensions and channels
-    intersection = torch.sum(gt_score * pred_score, dim=(1, 2, 3))
-    union = torch.sum(gt_score, dim=(1, 2, 3)) + torch.sum(pred_score, dim=(1, 2, 3)) + eps
+    eps = 1e-4
+    # Flatten across batch and spatial dims for global Dice
+    gt_flatten = gt_score.view(-1)
+    pred_flatten = pred_score.view(-1)
     
-    # Epsilon in numerator too to prevent loss from becoming 1.0 too abruptly
+    intersection = torch.sum(gt_flatten * pred_flatten)
+    union = torch.sum(gt_flatten) + torch.sum(pred_flatten) + eps
+    
     dice = (2. * intersection + eps) / union
-    return 1. - dice.mean()
+    return 1. - dice
 
 
 def get_geo_loss(gt_geo, pred_geo):

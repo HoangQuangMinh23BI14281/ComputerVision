@@ -27,9 +27,9 @@ DET_SCORE_THRESH = 0.2        # Set very low (0.2) to see progress during early 
 DET_NMS_THRESH = 0.2          # EAST NMS threshold
 # ============================================================
 # Recognition (CRNN) Hyperparameters
-# ============================================================
 REC_IMAGE_SHAPE = (3, 32, 320) # (Channels, Height, Max Width)
-REC_CHAR_SET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ aàảãáạăằẳẵắặâầẩẫấậeèẻẽéẹêềểễếệiìỉĩíịoòỏõóọôồổỗốộơờởỡớợuùủũúụưừửữứựyỳỷỹýỵAÀẢÃÁẠĂẰẲẴẮẶÂẦẨẪẤẬEÈẺẼÉẸÊỀỂỄẾỆIÌỈĨÍỊOÒỎÕÓỌÔỒỔỖỐỘƠỜỞỠỚỢUÙỦŨÚỤƯỪỬỮỨỰYỲỶỸÝỴ"
-REC_MEAN = [0.485, 0.456, 0.406]
+# Legacy character set (95 chars) to match current best.pth
+# Note: Re-training is required to support the full Vietnamese character set below
+REC_CHAR_SET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ "
 REC_STD = [0.229, 0.224, 0.225]
 REC_MIN_CROP_WIDTH = 8
