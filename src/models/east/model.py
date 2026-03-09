@@ -89,23 +89,26 @@ class Merge(nn.Module):
 class Output(nn.Module):
     def __init__(self):
         super(Output, self).__init__()
+        # Score branch
         self.conv1 = nn.Conv2d(in_channels=32, out_channels=1, kernel_size=1)
         self.sigmoid1 = nn.Sigmoid()
 
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=4, kernel_size=1)
+        # Geometry branch: 4 (loc) + 1 (angle) = 5 channels
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=5, kernel_size=1)
         self.sigmoid2 = nn.Sigmoid()
 
-        self.conv3 = nn.Conv2d(in_channels=32, out_channels=1, kernel_size=1)
-        self.sigmoid3 = nn.Sigmoid()
-
         self.scope = 512
-
         self.init_weights()
 
     def forward(self, x):
         score = self.sigmoid1(self.conv1(x)) 
-        loc = self.sigmoid2(self.conv2(x)) * self.scope
-        angle = (self.sigmoid3(self.conv3(x)) - 0.5) * math.pi
+        
+        # Geometry prediction
+        geo_raw = self.sigmoid2(self.conv2(x))
+        
+        # Split into location [N, 4, H, W] and angle [N, 1, H, W]
+        loc = geo_raw[:, :4, :, :] * self.scope
+        angle = (geo_raw[:, 4:, :, :] - 0.5) * math.pi
 
         geo = torch.cat((loc, angle), dim=1)
 

@@ -79,29 +79,41 @@ def create_vocab(annotation_directory='data/task2/annotation'):
 
 from src.config import REC_CHAR_SET
 
-def create_map():
-    vocab = list(REC_CHAR_SET)
-    map = {i + 1: char for i, char in enumerate(vocab)}
-    rev_map = {char: i for i, char in map.items()}
-    return map, rev_map
-
+# Global caching of character maps for performance
+_VOCAB = list(REC_CHAR_SET)
+_MAP = {i + 1: char for i, char in enumerate(_VOCAB)}
+_REV_MAP = {char: i + 1 for i, char in enumerate(_VOCAB)} 
 
 def encode(text):
-    map, rev_map = create_map()
-    text_encode = [rev_map[char] for char in text if char in rev_map]
+    """Encodes a string into a list of integers."""
+    text_encode = [_REV_MAP[char] for char in text if char in _REV_MAP]
     return text_encode, len(text_encode)
 
 
 def decode(labels):
-    map, rev_map = create_map()
-    text_decode = [map[i] for i in labels if i in map]
-    text_decode = ''.join(text_decode)
-    return text_decode
+    """
+    Decodes a sequence of labels into a string using CTC Greedy Search logic.
+    1. Skip if current label is blank (0).
+    2. Skip if current label is same as previous (consolidation).
+    This correctly handles cases like 'L - blank - L' (L L) vs 'L - L - Blank' (L).
+    """
+    text = []
+    for i in range(len(labels)):
+        if labels[i] == 0:
+            continue
+        if i > 0 and labels[i] == labels[i-1]:
+            continue
+            
+        if labels[i] in _MAP:
+            text.append(_MAP[labels[i]])
+    
+    return ''.join(text)
+
+def create_map():
+    """Returns the current maps."""
+    return _MAP, _REV_MAP
 
 
 if __name__ == '__main__':
-    with open('data/task2/annotation/vocab.json', 'r') as f:
-        vocab = json.load(f)
-
-    print(create_map(vocab))
-    pass
+    print(f"Vocab size: {len(_VOCAB)}")
+    print(f"Map size: {len(_MAP)}")

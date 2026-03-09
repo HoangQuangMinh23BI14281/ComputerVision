@@ -3,15 +3,35 @@ from torch import nn
 
 
 def get_dice_loss(gt_score, pred_score):
-    inter = torch.sum(gt_score * pred_score)
-    union = torch.sum(gt_score) + torch.sum(pred_score) + 1e-4
-
-    return 1. - 2 * inter / union
+    """
+    Computes the Dice loss for the classification branch.
+    Calculated per-image in the batch for better stability.
+    """
+    eps = 1e-5
+    # Calculate intersection and union over spatial dimensions and channels
+    intersection = torch.sum(gt_score * pred_score, dim=(1, 2, 3))
+    union = torch.sum(gt_score, dim=(1, 2, 3)) + torch.sum(pred_score, dim=(1, 2, 3)) + eps
+    
+    # Epsilon in numerator too to prevent loss from becoming 1.0 too abruptly
+    dice = (2. * intersection + eps) / union
+    return 1. - dice.mean()
 
 
 def get_geo_loss(gt_geo, pred_geo):
+    """
+    Computes the geometric loss (IoU + Angle).
+    Uses Log-IoU for stronger gradients during early training.
+    """
+    eps = 1e-6
     d1_gt, d2_gt, d3_gt, d4_gt, angle_gt = torch.split(gt_geo, 1, 1)
     d1_pred, d2_pred, d3_pred, d4_pred, angle_pred = torch.split(pred_geo, 1, 1)
+    
+    # Ensure predictions are positive to avoid NaN in area calculation
+    d1_pred = torch.clamp(d1_pred, min=0)
+    d2_pred = torch.clamp(d2_pred, min=0)
+    d3_pred = torch.clamp(d3_pred, min=0)
+    d4_pred = torch.clamp(d4_pred, min=0)
+
     area_gt = (d1_gt + d2_gt) * (d3_gt + d4_gt)
     area_pred = (d1_pred + d2_pred) * (d3_pred + d4_pred)
     w_inter = torch.min(d1_gt, d1_pred) + torch.min(d2_gt, d2_pred)
@@ -19,9 +39,13 @@ def get_geo_loss(gt_geo, pred_geo):
     area_inter = w_inter * h_inter
     area_union = area_gt + area_pred - area_inter
     
-    # Standard 1 - IoU is more stable than -log(IoU)
-    iou = (area_inter + 1.0) / (area_union + 1.0)
-    iou_loss_map = 1.0 - iou
+    # Log-IoU Loss: provides stronger gradient than 1 - IoU
+    # Clamp IoU to [eps, 1.0] to prevent log(0)
+    iou = (area_inter + eps) / (area_union + eps)
+    iou = torch.clamp(iou, min=eps, max=1.0)
+    iou_loss_map = -torch.log(iou)
+    
+    # Angle loss: cosine based to handle periodicity
     angle_loss_map = 1 - torch.cos(angle_gt - angle_pred)
 
     return iou_loss_map, angle_loss_map
@@ -33,14 +57,17 @@ class EastLoss(nn.Module):
         self.weight_angle = weight_angle
 
     def forward(self, gt_score, pred_score, gt_geo, pred_geo):
+        # Graceful handling of empty ground truth while keeping gradient flow
         if torch.sum(gt_score) < 1:
-            return torch.sum(pred_score + pred_geo) * 0
+            return (pred_score.sum() + pred_geo.sum()) * 0
 
         classify_loss = get_dice_loss(gt_score, pred_score)
         iou_loss_map, angle_loss_map = get_geo_loss(gt_geo, pred_geo)
 
-        angle_loss = torch.sum(angle_loss_map * gt_score) / torch.sum(gt_score)
-        iou_loss = torch.sum(iou_loss_map * gt_score) / torch.sum(gt_score)
+        # Only compute geometric loss on text pixels (masking)
+        angle_loss = torch.sum(angle_loss_map * gt_score) / (torch.sum(gt_score) + 1e-5)
+        iou_loss = torch.sum(iou_loss_map * gt_score) / (torch.sum(gt_score) + 1e-5)
+        
         geo_loss = self.weight_angle * angle_loss + iou_loss
 
         return geo_loss + classify_loss

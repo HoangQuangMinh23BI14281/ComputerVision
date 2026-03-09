@@ -13,11 +13,13 @@ class LabelConverter:
         """
         Args:
             vocab_chars: string of all unique characters in dataset.
-                         If None, must call build_vocab() first.
+                         If None, uses REC_CHAR_SET from config.
         """
         self.blank_token = '[blank]'
-        if vocab_chars is not None:
-            self._build(vocab_chars)
+        from src.config import REC_CHAR_SET
+        if vocab_chars is None:
+            vocab_chars = REC_CHAR_SET
+        self._build(vocab_chars)
 
     def build_vocab_from_dir(self, annotation_dir):
         """Scan all TXT annotation files and build vocabulary."""

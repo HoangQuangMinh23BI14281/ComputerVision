@@ -83,7 +83,7 @@ def move_points(vertices, index1, index2, r, coef):
     return vertices
 
 
-def shrink_poly(vertices, coef=0.3):
+def shrink_poly(vertices, coef=0.2):
     x1, y1, x2, y2, x3, y3, x4, y4 = vertices
     r1 = min(cal_distance(x1, y1, x2, y2), cal_distance(x1, y1, x4, y4))
     r2 = min(cal_distance(x2, y2, x1, y1), cal_distance(x2, y2, x3, y3))
@@ -208,45 +208,71 @@ def get_score_geo(img, vertices, scale, length):
     score_map = np.zeros((int(img.height * scale), int(img.width * scale), 1), np.float32)
     geo_map = np.zeros((int(img.height * scale), int(img.width * scale), 5), np.float32)
 
+    # Vectorized coordinate computation
     index = np.arange(0, length, int(1 / scale))
     index_x, index_y = np.meshgrid(index, index)
-    ignored_polys = []
-    polys = []
+    
+    # Precompute coordinate matrix for rotation once
+    x_lin = index_x.reshape((1, index_x.size))
+    y_lin = index_y.reshape((1, index_x.size))
+    coord_mat = np.concatenate((x_lin, y_lin), 0)
 
+    polys = []
     for i, vertice in enumerate(vertices):
-        poly = np.around(scale * shrink_poly(vertice).reshape((4, 2))).astype(np.int32)  # scaled & shrinked
+        # Shrunk polygon for score map
+        # Reduced coef to 0.2 to avoid disappearing small text
+        shrunk_v = shrink_poly(vertice, coef=0.2)
+        poly = np.around(scale * shrunk_v.reshape((4, 2))).astype(np.int32)
+        
+        # Ensure the shrunk polygon has at least some area
+        if cv2.contourArea(poly) < 1:
+            # Fallback: use slightly less shrunk version if it disappeared
+            shrunk_v = shrink_poly(vertice, coef=0.1)
+            poly = np.around(scale * shrunk_v.reshape((4, 2))).astype(np.int32)
+            
         polys.append(poly)
+        
         temp_mask = np.zeros(score_map.shape[:-1], np.float32)
         cv2.fillPoly(temp_mask, [poly], 1)
+        
+        # Binary mask for active indices to speed up geo_map updates
+        mask_binary = (temp_mask > 0)
+        if not np.any(mask_binary):
+            # Last resort: if still no pixels, the text is too small for this resolution
+            continue
 
-        theta = 0
-        rotate_mat = get_rotate_mat(theta)
-
-        rotated_vertices = rotate_vertices(vertice, theta)
+        # Calculate actual angle for the box
+        theta = find_min_rect_angle(vertice)
+        
+        # Optimized geometry calculation
+        # Rotate back to axis-aligned for d1-d4 calculation
+        # Note: we use -theta because we want to align the rotated box to axes
+        rotated_vertices = rotate_vertices(vertice, -theta)
         x_min, x_max, y_min, y_max = get_boundary(rotated_vertices)
-        rotated_x, rotated_y = rotate_all_pixels(rotate_mat, vertice[0], vertice[1], length)
+        
+        # Only compute for masked pixels
+        active_coords = coord_mat[:, mask_binary.flatten()]
+        
+        # For geometry calculation, we also need to rotate the PIXEL coordinates 
+        # to the same coordinate system as the axis-aligned box
+        # But for d1-d4 relative to the rotated box, we can just rotate the pixels
+        # around the same anchor used in rotate_vertices
+        anchor = vertice.reshape((4, 2)).T[:, :1]
+        rotate_map = get_rotate_mat(-theta)
+        active_coords_rotated = np.dot(rotate_map, active_coords - anchor) + anchor
 
-        d1 = rotated_y - y_min
-        d1[d1 < 0] = 0
-        d2 = y_max - rotated_y
-        d2[d2 < 0] = 0
-        d3 = rotated_x - x_min
-        d3[d3 < 0] = 0
-        d4 = x_max - rotated_x
-        d4[d4 < 0] = 0
-        geo_map[:, :, 0] += d1[index_y, index_x] * temp_mask
-        geo_map[:, :, 1] += d2[index_y, index_x] * temp_mask
-        geo_map[:, :, 2] += d3[index_y, index_x] * temp_mask
-        geo_map[:, :, 3] += d4[index_y, index_x] * temp_mask
-        geo_map[:, :, 4] += theta * temp_mask
+        # d1: top, d2: bottom, d3: left, d4: right
+        geo_map[mask_binary, 0] = active_coords_rotated[1] - y_min
+        geo_map[mask_binary, 1] = y_max - active_coords_rotated[1]
+        geo_map[mask_binary, 2] = active_coords_rotated[0] - x_min
+        geo_map[mask_binary, 3] = x_max - active_coords_rotated[0]
+        geo_map[mask_binary, 4] = theta
 
     cv2.fillPoly(score_map, polys, 1)
-
     score_map = torch.Tensor(score_map).permute(2, 0, 1)
     geo_map = torch.Tensor(geo_map).permute(2, 0, 1)
 
     return score_map, geo_map
-
 
 def is_valid_poly(res, score_shape, scale):
     """Checks if a polygon is within image boundaries."""
@@ -261,24 +287,98 @@ def restore_polys(valid_pos, valid_geo, score_shape, scale=4):
     polys = []
     index = []
     valid_pos *= scale
-    d = valid_geo[:4, :]
+    d = valid_geo[:4, :] # d1, d2, d3, d4
+    theta = valid_geo[4, :] # angle
     for i in range(valid_pos.shape[0]):
         x = valid_pos[i, 0]
         y = valid_pos[i, 1]
-        y_min = y - d[0, i] * 1.3
-        y_max = y + d[1, i] * 1.3
-        x_min = x - d[2, i] * 1.1
-        x_max = x + d[3, i] * 1.1
+        t = theta[i]
+        
+        y_min = y - d[0, i]
+        y_max = y + d[1, i]
+        x_min = x - d[2, i]
+        x_max = x + d[3, i]
+        
+        # Axis-aligned relative to the rotation anchor
+        # In get_score_geo, we used active_coords_rotated = map(active) + anchor
+        # So here we do the reverse
         coord = np.array([[x_min, x_max, x_max, x_min], [y_min, y_min, y_max, y_max]])
-        if is_valid_poly(coord, score_shape, scale):
+        
+        # Rotate back by theta
+        rotate_mat = get_rotate_mat(t)
+        # Using (x,y) of the pixel as the anchor for rotation restoration
+        # (This matches how we calculated active_coords_rotated)
+        anchor = np.array([[x], [y]])
+        coord_rotated = np.dot(rotate_mat, coord - anchor) + anchor
+        
+        if is_valid_poly(coord_rotated, score_shape, scale):
+            # Geometry Sanity Check: Filter out "wild" boxes
+            # Box shouldn't be larger than the score map effectively
+            h_map, w_map = score_shape
+            box_w = np.linalg.norm(coord_rotated[:, 0] - coord_rotated[:, 1])
+            box_h = np.linalg.norm(coord_rotated[:, 0] - coord_rotated[:, 3])
+            
+            # If box is extremely large (e.g. > 80% image size) in one dimension while tiny in other
+            # it's likely noise.
+            if box_w > w_map * scale * 0.9 or box_h > h_map * scale * 0.9:
+                if box_w / (box_h + 1e-5) > 50 or box_h / (box_w + 1e-5) > 50:
+                    continue
+
             index.append(i)
-            polys.append([coord[0, 0], coord[1, 0], coord[0, 1], coord[1, 1],
-                         coord[0, 2], coord[1, 2], coord[0, 3], coord[1, 3]])
+            # Order: x1, y1, x2, y2, x3, y3, x4, y4
+            polys.append([coord_rotated[0, 0], coord_rotated[1, 0], coord_rotated[0, 1], coord_rotated[1, 1],
+                         coord_rotated[0, 2], coord_rotated[1, 2], coord_rotated[0, 3], coord_rotated[1, 3]])
     return np.array(polys), index
+
+def py_nms(dets, thresh):
+    """
+    Improved Python NMS fallback.
+    Calculates the true axis-aligned bounding box of the rotated polygon 
+    for more accurate overlap calculation.
+    """
+    if dets.shape[0] == 0: return []
+    
+    # dets format: x1, y1, x2, y2, x3, y3, x4, y4, score
+    polys = dets[:, :8].reshape(-1, 4, 2)
+    scores = dets[:, 8]
+    
+    # Calculate true axis-aligned bounding boxes (min/max of all 4 points)
+    x1 = np.min(polys[:, :, 0], axis=1)
+    y1 = np.min(polys[:, :, 1], axis=1)
+    x2 = np.max(polys[:, :, 0], axis=1)
+    y2 = np.max(polys[:, :, 1], axis=1)
+
+    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1 + 1)
+        h = np.maximum(0.0, yy2 - yy1 + 1)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+
+        inds = np.where(ovr <= thresh)[0]
+        order = order[inds + 1]
+
+    return keep
 
 def get_east_boxes(score, geo, score_thresh=0.9, nms_thresh=0.2):
     """Converts model score/geo maps to final bounding boxes."""
-    score = score[0, :, :]
+    if len(score.shape) == 4: # Handle [N, C, H, W]
+        score = score[0]
+        geo = geo[0]
+        
+    score = score[0, :, :].cpu().numpy() if isinstance(score, torch.Tensor) else score[0, :, :]
+    geo = geo.cpu().numpy() if isinstance(geo, torch.Tensor) else geo
+    
     xy_text = np.argwhere(score > score_thresh)
     if xy_text.size == 0: return np.array([])
     
@@ -293,24 +393,18 @@ def get_east_boxes(score, geo, score_thresh=0.9, nms_thresh=0.2):
     boxes[:, :8] = polys_restored
     boxes[:, 8] = score[xy_text[index, 0], xy_text[index, 1]]
     
-    # Simple NMS fallback (since lanms might not be installed)
     try:
-        import lanms
-        boxes = lanms.merge_quadrangle_n9(boxes.astype('float32'), nms_thresh)
+        try:
+            import lanms
+            boxes = lanms.merge_quadrangle_n9(boxes.astype('float32'), nms_thresh)
+        except (ImportError, AttributeError):
+            # Try lanms-nova which is often used as a drop-in or specialized fork
+            import lanms_nova
+            boxes = lanms_nova.merge_quadrangle_n9(boxes.astype('float32'), nms_thresh)
     except ImportError:
-        # Sort by score
-        indices = np.argsort(boxes[:, 8])[::-1]
-        boxes = boxes[indices]
-        keep = []
-        while len(boxes) > 0:
-            b = boxes[0]
-            keep.append(b)
-            if len(boxes) == 1: break
-            # Simple IoU check (approximate with bbox for speed if needed)
-            # For now just keep the top score as a placeholder for a real NMS
-            # if lanms is missing.
-            boxes = boxes[1:] 
-        boxes = np.array(keep)
+        # Use proper Python NMS fallback (which uses torchvision if available)
+        keep = py_nms(boxes, nms_thresh)
+        boxes = boxes[keep]
         
     return boxes
 

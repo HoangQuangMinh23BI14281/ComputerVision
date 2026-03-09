@@ -1,135 +1,96 @@
 import torch
-from torchvision import transforms
-from PIL import Image, ImageDraw
-import os
+import cv2
 import numpy as np
-import lanms
-
+from PIL import Image
+import os
+import argparse
 
 from src.models.east.model import East
-from src.models.east.utils import get_rotate_mat
+from src.models.east.utils import get_east_boxes, resize
+from src.config import DET_SCORE_THRESH, DET_NMS_THRESH
 
+def predict_east(model, image, device, score_thresh=DET_SCORE_THRESH, nms_thresh=DET_NMS_THRESH):
+    """
+    Predicts bounding boxes for an image using the EAST model.
+    Args:
+        model: Loaded EAST model.
+        image: PIL Image or image path.
+        device: CPU or GPU device.
+        score_thresh: Threshold for score map.
+        nms_thresh: Threshold for NMS.
+    Returns:
+        boxes: Detected bounding boxes [N, 9] (x1, y1, x2, y2, x3, y3, x4, y4, score).
+    """
+    if isinstance(image, str):
+        img_pil = Image.open(image).convert('RGB')
+    else:
+        img_pil = image.convert('RGB')
+        
+    orig_w, orig_h = img_pil.size
+    
+    # Resize for inference (multiples of 32)
+    # We use the same 'resize' logic as in visualize/train for consistency
+    img_resized, _ = resize(img_pil, np.zeros((0, 8)), 512)
+    new_w, new_h = img_resized.size
+    
+    # Calculate ratios
+    rat_w = new_w / orig_w
+    rat_h = new_h / orig_h
+    
+    # To Tensor
+    img_tensor = torch.from_numpy(np.array(img_resized)).permute(2, 0, 1).float()
+    img_tensor = (img_tensor / 255.0 - 0.5) / 0.5
+    img_tensor = img_tensor.unsqueeze(0).to(device)
 
+    model.eval()
+    with torch.no_grad():
+        score_map, geo_map = model(img_tensor)
+        
+    # Get boxes on resized image
+    boxes = get_east_boxes(score_map, geo_map, score_thresh=score_thresh, nms_thresh=nms_thresh)
+    
+    if boxes is not None and len(boxes) > 0:
+        # Map boxes back to original size
+        boxes[:, [0, 2, 4, 6]] /= rat_w
+        boxes[:, [1, 3, 5, 7]] /= rat_h
+        return boxes
+    
+    return np.array([])
 
+def main():
+    parser = argparse.ArgumentParser(description="EAST Prediction Script")
+    parser.add_argument('--image', type=str, required=True, help='Path to input image')
+    parser.add_argument('--weights', type=str, default='weights/east/best.pth', help='Path to model weights')
+    parser.add_argument('--output', type=str, default='res_east.png', help='Path to save result image')
+    parser.add_argument('--thresh', type=float, default=DET_SCORE_THRESH, help='Detection threshold')
+    args = parser.parse_args()
 
-def resize_img(img):
-	w, h = img.size
-	resize_w = w
-	resize_h = h
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Load model
+    model = East().to(device)
+    if os.path.exists(args.weights):
+        model.load_state_dict(torch.load(args.weights, map_location=device, weights_only=True))
+        print(f"Loaded weights from {args.weights}")
+    else:
+        print(f"Error: Weights {args.weights} not found.")
+        return
 
-	resize_h = resize_h if resize_h % 32 == 0 else int(resize_h / 32) * 32
-	resize_w = resize_w if resize_w % 32 == 0 else int(resize_w / 32) * 32
-	img = img.resize((resize_w, resize_h), Image.BILINEAR)
-	ratio_h = resize_h / h
-	ratio_w = resize_w / w
+    # Predict
+    boxes = predict_east(model, args.image, device, score_thresh=args.thresh)
 
-	return img, ratio_h, ratio_w
+    # Visualize results
+    img_cv = cv2.imread(args.image)
+    if boxes is not None and len(boxes) > 0:
+        print(f"Detected {len(boxes)} text regions.")
+        for box in boxes:
+            pts = box[:8].reshape(4, 2).astype(np.int32)
+            cv2.polylines(img_cv, [pts], True, (0, 255, 0), 2)
+    else:
+        print("No text detected.")
 
-
-def load_pil(img):
-	t = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
-	return t(img).unsqueeze(0)
-
-
-def is_valid_poly(res, score_shape, scale):
-	cnt = 0
-	for i in range(res.shape[1]):
-		if res[0, i] < 0 or res[0, i] >= score_shape[1] * scale or \
-				res[1, i] < 0 or res[1, i] >= score_shape[0] * scale:
-			cnt += 1
-	return True if cnt <= 1 else False
-
-
-def restore_polys(valid_pos, valid_geo, score_shape, scale=4):
-	polys = []
-	index = []
-	valid_pos *= scale
-	d = valid_geo[:4, :]  # 4 x N
-
-	for i in range(valid_pos.shape[0]):
-		x = valid_pos[i, 0]
-		y = valid_pos[i, 1]
-		y_min = y - d[0, i] * 1.3
-		y_max = y + d[1, i] * 1.3
-		x_min = x - d[2, i] * 1.1
-		x_max = x + d[3, i] * 1.1
-
-		temp_x = np.array([[x_min, x_max, x_max, x_min]])
-		temp_y = np.array([[y_min, y_min, y_max, y_max]])
-
-		coordinate = np.concatenate((temp_x, temp_y), axis=0)
-
-		if is_valid_poly(coordinate, score_shape, scale):
-			index.append(i)
-			polys.append([coordinate[0, 0], coordinate[1, 0], coordinate[0, 1], coordinate[1, 1],
-						coordinate[0, 2], coordinate[1, 2], coordinate[0, 3], coordinate[1, 3]])
-
-	return np.array(polys), index
-
-
-def get_boxes(score, geo, score_thresh=0.9, nms_thresh=0.2):
-	score = score[0, :, :]
-	xy_text = np.argwhere(score > score_thresh)
-	if xy_text.size == 0:
-		return None
-
-	xy_text = xy_text[np.argsort(xy_text[:, 0])]
-	valid_pos = xy_text[:, ::-1].copy()
-	valid_geo = geo[:, xy_text[:, 0], xy_text[:, 1]]
-	polys_restored, index = restore_polys(valid_pos, valid_geo, score.shape) 
-	if polys_restored.size == 0:
-		return None
-
-	boxes = np.zeros((polys_restored.shape[0], 9), dtype=np.float32)
-	boxes[:, :8] = polys_restored
-	boxes[:, 8] = score[xy_text[index, 0], xy_text[index, 1]]
-	boxes = lanms.merge_quadrangle_n9(boxes.astype('float32'), nms_thresh)
-
-	return boxes
-
-
-def adjust_ratio(boxes, ratio_w, ratio_h):
-	if boxes is None or boxes.size == 0:
-		return None
-	boxes[:, [0, 2, 4, 6]] /= ratio_w
-	boxes[:, [1, 3, 5, 7]] /= ratio_h
-	return np.around(boxes)
-	
-	
-def detect(img, model, device):
-	img, ratio_h, ratio_w = resize_img(img)
-	with torch.no_grad():
-		score, geo = model(load_pil(img).to(device))
-	boxes = get_boxes(score.squeeze(0).cpu().numpy(), geo.squeeze(0).cpu().numpy())
-	return adjust_ratio(boxes, ratio_w, ratio_h)
-
-
-def plot_boxes(img, boxes):
-	if boxes is None:
-		return img
-	
-	draw = ImageDraw.Draw(img)
-	for box in boxes:
-		draw.polygon([box[0], box[1], box[2], box[3], box[4], box[5], box[6], box[7]], outline=(0, 255, 0))
-	return img
-
+    cv2.imwrite(args.output, img_cv)
+    print(f"Saved visualization to {args.output}")
 
 if __name__ == '__main__':
-	model_path = './east1.pt'
-	img_path = 'data/raw_data/test/X51005230616.jpg'
-	res_img = './res.png'
-
-	device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-	model = East().to(device)
-	if os.path.exists('east1.pt'):
-	    model.load_state_dict(torch.load('east1.pt', map_location=torch.device('cpu')))
-	else:
-	    print("WARNING: east1.pt not found. Using uninitialized weights.")
-	model.eval()
-	img = Image.open(img_path)
-
-	boxes = detect(img, model, device)
-
-	plot_img = plot_boxes(img, boxes)
-	plot_img.save(res_img)
+    main()

@@ -14,6 +14,7 @@ import time
 import pandas as pd
 from src.utils.metrics import calculate_east_metrics
 from src.models.east.utils import get_east_boxes
+from src.config import DET_SCORE_THRESH, DET_NMS_THRESH
 
 def evaluate_east(model, dataloader, device):
     model.eval()
@@ -29,7 +30,8 @@ def evaluate_east(model, dataloader, device):
             for i in range(images.size(0)):
                 s = pred_scores[i].cpu().numpy()
                 g = pred_geos[i].cpu().numpy()
-                boxes = get_east_boxes(s, g)
+                # Use centralized threshold from config.py
+                boxes = get_east_boxes(s, g, score_thresh=DET_SCORE_THRESH, nms_thresh=DET_NMS_THRESH)
                 all_pred_boxes.append(boxes)
                 all_gt_boxes.append(gt_boxes[i])
 
@@ -47,7 +49,7 @@ def main():
     LOG_PATH = os.path.join(WEIGHTS_DIR, 'log.csv')
     
     BATCH_SIZE = 12
-    EPOCHS = 50
+    EPOCHS = 100
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load Splits
@@ -59,7 +61,7 @@ def main():
     val_dataset = EastDataset(X_val, y_val)
 
     # Optimized DataLoader
-    num_workers = 4 if os.name != 'nt' else 0 # num_workers > 0 can be tricky on Windows/PowerShell
+    num_workers = 4 if os.name != 'nt' else 0 
     train_loader = DataLoader(
         train_dataset, 
         batch_size=BATCH_SIZE, 
@@ -75,17 +77,31 @@ def main():
     if os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
         model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, 'best.pth'), map_location=device, weights_only=True))
     
-    optimizer = Adam(model.parameters(), lr=5e-5)
+    optimizer = Adam(model.parameters(), lr=1e-4)
+    # Adding LR Scheduler for better convergence
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     loss_fn = EastLoss().to(device)
     
-    # AMP Scaler (Updated API)
+    # AMP Scaler
     scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
     
     history = []
     best_f1 = 0
 
+    # Training Loop
     for epoch in range(EPOCHS):
         model.train()
+        
+        # --- PHASED TRAINING: Freeze backbone for first 5 epochs if starting fresh ---
+        # This helps stabilize the randomly initialized Merge and Output blocks
+        if epoch < 5 and not os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
+            for param in model.extractor.parameters():
+                param.requires_grad = False
+            print(f"  Epoch {epoch+1}: Backbone frozen to stabilize Merge/Output blocks.")
+        else:
+            for param in model.extractor.parameters():
+                param.requires_grad = True
+
         epoch_loss = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
@@ -94,37 +110,34 @@ def main():
             
             optimizer.zero_grad()
             
-            # Autocast for Mixed Precision (Updated API)
             with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
                 pred_score, pred_geo = model(images)
                 loss = loss_fn(gt_score, pred_score, gt_geo, pred_geo)
             
-            # Scaled Backward
             scaler.scale(loss).backward()
-            
-            # Gradient Clipping (Safe margin)
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            
             scaler.step(optimizer)
             scaler.update()
             
             epoch_loss += loss.item()
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.6f}")
             
+        scheduler.step()
         avg_train_loss = epoch_loss / len(train_loader)
         
         # Evaluation
         val_metrics = evaluate_east(model, val_loader, device)
         
         print(f"Epoch {epoch+1} Summary:")
-        print(f"  Train Loss: {avg_train_loss:.4f}")
+        print(f"  Train Loss: {avg_train_loss:.4f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
         print(f"  Val - Precision: {val_metrics['precision']:.4f}, Recall: {val_metrics['recall']:.4f}, F1: {val_metrics['f1']:.4f}, IoU: {val_metrics['iou']:.4f}")
         print(f"  FPS: {val_metrics['fps']:.1f}")
         
         log_entry = {
             'epoch': epoch+1, 
             'train_loss': avg_train_loss, 
+            'lr': optimizer.param_groups[0]['lr'],
             'precision': val_metrics['precision'],
             'recall': val_metrics['recall'],
             'f1': val_metrics['f1'],

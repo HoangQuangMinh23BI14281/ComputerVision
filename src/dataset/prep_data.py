@@ -56,7 +56,7 @@ def process_sroie():
                     continue
                     
                 polygons = []
-                with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f_txt:
+                with open(txt_path, 'r', encoding='utf-8-sig', errors='ignore') as f_txt:
                     lines = f_txt.readlines()
                     
                 for line in lines:
