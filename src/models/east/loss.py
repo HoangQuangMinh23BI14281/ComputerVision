@@ -1,34 +1,46 @@
 import torch
 from torch import nn
 
-
-def get_dice_loss(gt_score, pred_score):
+def get_score_loss(gt_score, pred_score):
     """
-    Computes the Dice loss for the classification branch.
-    Stable implementation using sum over spatial dimensions.
+    Kết hợp OHEM BCE và Dice Loss để chống mất cân bằng class.
+    Khắc phục tình trạng F1 = 0.0000
     """
     eps = 1e-4
-    # Flatten across batch and spatial dims for global Dice
-    gt_flatten = gt_score.view(-1)
-    pred_flatten = pred_score.view(-1)
     
-    intersection = torch.sum(gt_flatten * pred_flatten)
-    union = torch.sum(gt_flatten) + torch.sum(pred_flatten) + eps
+    # 1. Dice Loss
+    intersection = torch.sum(gt_score * pred_score)
+    union = torch.sum(gt_score) + torch.sum(pred_score) + eps
+    dice_loss = 1.0 - (2.0 * intersection + eps) / union
     
-    dice = (2. * intersection + eps) / union
-    return 1. - dice
+    # 2. OHEM BCE Loss
+    pred_score_bce = torch.clamp(pred_score, min=1e-7, max=1.0 - 1e-7)
+    pos_mask = gt_score > 0.5
+    neg_mask = gt_score <= 0.5
+    
+    pos_loss = -torch.log(pred_score_bce[pos_mask])
+    neg_loss = -torch.log(1.0 - pred_score_bce[neg_mask])
+    
+    pos_count = pos_mask.sum()
+    if pos_count > 0:
+        neg_count_to_keep = min(int(pos_count * 3), neg_loss.size(0))
+        if neg_count_to_keep > 0:
+            neg_loss_hard, _ = torch.topk(neg_loss, neg_count_to_keep)
+        else:
+            neg_loss_hard = torch.tensor(0.0, device=gt_score.device)
+        bce_loss = (pos_loss.sum() + neg_loss_hard.sum()) / (pos_count + neg_count_to_keep + eps)
+    else:
+        neg_count_to_keep = max(1, int(neg_loss.size(0) * 0.1))
+        neg_loss_hard, _ = torch.topk(neg_loss, neg_count_to_keep)
+        bce_loss = neg_loss_hard.mean()
 
+    return dice_loss + bce_loss
 
 def get_geo_loss(gt_geo, pred_geo):
-    """
-    Computes the geometric loss (IoU + Angle).
-    Uses Log-IoU for stronger gradients during early training.
-    """
     eps = 1e-6
     d1_gt, d2_gt, d3_gt, d4_gt, angle_gt = torch.split(gt_geo, 1, 1)
     d1_pred, d2_pred, d3_pred, d4_pred, angle_pred = torch.split(pred_geo, 1, 1)
     
-    # Ensure predictions are positive to avoid NaN in area calculation
     d1_pred = torch.clamp(d1_pred, min=0)
     d2_pred = torch.clamp(d2_pred, min=0)
     d3_pred = torch.clamp(d3_pred, min=0)
@@ -41,17 +53,14 @@ def get_geo_loss(gt_geo, pred_geo):
     area_inter = w_inter * h_inter
     area_union = area_gt + area_pred - area_inter
     
-    # Log-IoU Loss: provides stronger gradient than 1 - IoU
-    # Clamp IoU to [eps, 1.0] to prevent log(0)
     iou = (area_inter + eps) / (area_union + eps)
     iou = torch.clamp(iou, min=eps, max=1.0)
     iou_loss_map = -torch.log(iou)
     
-    # Angle loss: cosine based to handle periodicity
-    angle_loss_map = torch.abs(angle_gt - angle_pred)
+    # HOÀN TÁC LẠI COSINE ĐỂ TRÁNH LỖI CHU KỲ GÓC (-90 và +90)
+    angle_loss_map = 1 - torch.cos(angle_gt - angle_pred)
 
     return iou_loss_map, angle_loss_map
-
 
 class EastLoss(nn.Module):
     def __init__(self, weight_angle=10):
@@ -59,14 +68,15 @@ class EastLoss(nn.Module):
         self.weight_angle = weight_angle
 
     def forward(self, gt_score, pred_score, gt_geo, pred_geo):
-        # Graceful handling of empty ground truth while keeping gradient flow
-        if torch.sum(gt_score) < 1:
-            return (pred_score.sum() + pred_geo.sum()) * 0
+        # LUÔN tính classify loss với OHEM mới
+        classify_loss = get_score_loss(gt_score, pred_score)
 
-        classify_loss = get_dice_loss(gt_score, pred_score)
+        if torch.sum(gt_score) < 1e-5:
+            # Khắc phục lỗi mất Gradient ảnh trống
+            return classify_loss + (pred_geo.sum() * 0.0)
+
         iou_loss_map, angle_loss_map = get_geo_loss(gt_geo, pred_geo)
 
-        # Only compute geometric loss on text pixels (masking)
         angle_loss = torch.sum(angle_loss_map * gt_score) / (torch.sum(gt_score) + 1e-5)
         iou_loss = torch.sum(iou_loss_map * gt_score) / (torch.sum(gt_score) + 1e-5)
         

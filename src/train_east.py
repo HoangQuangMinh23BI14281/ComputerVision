@@ -93,7 +93,6 @@ def main():
         model.train()
         
         # --- PHASED TRAINING: Freeze backbone for first 5 epochs if starting fresh ---
-        # This helps stabilize the randomly initialized Merge and Output blocks
         if epoch < 5 and not os.path.exists(os.path.join(WEIGHTS_DIR, 'best.pth')):
             for param in model.extractor.parameters():
                 param.requires_grad = False
@@ -103,6 +102,7 @@ def main():
                 param.requires_grad = True
 
         epoch_loss = 0
+        valid_batches = 0 # Đếm số batch hợp lệ (không bị inf/nan)
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
         for images, gt_score, gt_geo, _ in pbar:
@@ -110,21 +110,41 @@ def main():
             
             optimizer.zero_grad()
             
+            # CHỈ để model dự đoán trong môi trường FP16 (Autocast)
             with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
                 pred_score, pred_geo = model(images)
-                loss = loss_fn(gt_score, pred_score, gt_geo, pred_geo)
+            
+            # KÉO RA KHỎI AUTOCAST: Ép về Float32 trước khi tính Loss để tránh giới hạn 65504
+            pred_score = pred_score.float()
+            pred_geo = pred_geo.float()
+            loss = loss_fn(gt_score, pred_score, gt_geo, pred_geo)
+            
+            # Lưới lọc an toàn: Bỏ qua batch nếu Loss bị inf hoặc nan
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"\nCảnh báo: Loss bị {loss.item()}, đang bỏ qua batch này...")
+                continue
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            
+            # Lưu lại scale trước khi update để check xem optimizer có bị skip không
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
             
             epoch_loss += loss.item()
+            valid_batches += 1
             pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.6f}")
             
-        scheduler.step()
-        avg_train_loss = epoch_loss / len(train_loader)
+        # KHẮC PHỤC WARNING SCHEDULER: Chỉ nhảy Scheduler nếu Optimizer đã được cập nhật
+        scale_after = scaler.get_scale()
+        skip_lr_sched = (scale_before > scale_after)
+        if not skip_lr_sched:
+            scheduler.step()
+            
+        # Tính trung bình dựa trên số batch hợp lệ
+        avg_train_loss = epoch_loss / valid_batches if valid_batches > 0 else float('inf')
         
         # Evaluation
         val_metrics = evaluate_east(model, val_loader, device)
