@@ -48,7 +48,7 @@ def get_geo_loss(gt_geo, pred_geo):
     iou_loss_map = -torch.log(iou)
     
     # Angle loss: cosine based to handle periodicity
-    angle_loss_map = 1 - torch.cos(angle_gt - angle_pred)
+    angle_loss_map = torch.abs(angle_gt - angle_pred)
 
     return iou_loss_map, angle_loss_map
 

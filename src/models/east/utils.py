@@ -145,6 +145,7 @@ def find_min_rect_angle(vertices):
     angle_interval = 1
     angle_list = list(range(-90, 90, angle_interval))
     area_list = []
+    
     for theta in angle_list:
         rotated = rotate_vertices(vertices, theta / 180 * math.pi)
         x1, y1, x2, y2, x3, y3, x4, y4 = rotated
@@ -156,14 +157,19 @@ def find_min_rect_angle(vertices):
     min_error = float('inf')
     best_index = -1
     rank_num = 10
-    # find the best angle with correct orientation
+
     for index in sorted_area_index[:rank_num]:
         rotated = rotate_vertices(vertices, angle_list[index] / 180 * math.pi)
         temp_error = cal_error(rotated)
         if temp_error < min_error:
             min_error = temp_error
             best_index = index
-    return angle_list[best_index] / 180 * math.pi
+    best_angle = angle_list[best_index]
+    if abs(best_angle) <= 3:
+        best_angle = 0
+    elif abs(best_angle - 90) <= 3 or abs(best_angle + 90) <= 3:
+        best_angle = 90 if best_angle > 0 else -90
+    return best_angle / 180 * math.pi
 
 
 def rotate_all_pixels(rotate_mat, anchor_x, anchor_y, length):
